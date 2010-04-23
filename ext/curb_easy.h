@@ -49,6 +49,8 @@ typedef struct {
 
   int last_result; /* last result code from multi loop */
 
+  char use_easy_perform; /* flag to use curl_easy_perform, instead of multi */
+  
 } ruby_curl_easy;
 
 extern VALUE cCurlEasy;

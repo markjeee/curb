@@ -203,6 +203,8 @@ static VALUE ruby_curl_easy_new(int argc, VALUE *argv, VALUE klass) {
   rbce->multipart_form_post = 0;
   rbce->enable_cookies = 0;
 
+  rbce->use_easy_perform = 0;
+
   new_curl = Data_Wrap_Struct(klass, curl_easy_mark, curl_easy_free, rbce);
 
   /* set the new_curl pointer to the curl handle */
@@ -1806,6 +1808,56 @@ VALUE ruby_curl_easy_cleanup( VALUE self, ruby_curl_easy *rbce ) {
   return Qnil;
 }
 
+/*
+ * call-seq:
+ *   easy.use_easy_perform = boolean                           => boolean
+ */
+static VALUE ruby_curl_easy_use_easy_perform_set(VALUE self, VALUE use_easy_perform) {
+  CURB_BOOLEAN_SETTER(ruby_curl_easy, use_easy_perform);
+}
+
+/*
+ * call-seq:
+ *   easy.verbose?                                    => boolean
+ */
+static VALUE ruby_curl_easy_use_easy_perform_q(VALUE self) {
+  CURB_BOOLEAN_GETTER(ruby_curl_easy, use_easy_perform);
+}
+
+/*
+ * call-seq: 
+ *   easy.reset => nil
+ */
+static VALUE ruby_curl_easy_reset(VALUE self) {
+  ruby_curl_easy *rbce;
+  
+  Data_Get_Struct(self, ruby_curl_easy, rbce);
+  
+  curl_easy_cleanup(rbce->curl);
+  rbce->curl = curl_easy_init();
+  
+  return Qnil;
+}
+
+/*
+ * THIS IS A HACK. Copied to be able to re-use the curl handle.
+ */
+static VALUE handle_easy_perform(VALUE self, ruby_curl_easy *rbce) {  
+  CURL *curl;
+  
+  ruby_curl_easy_setup(rbce);
+  curl = rbce->curl;  
+  rbce->last_result = curl_easy_perform(curl);
+  ruby_curl_easy_cleanup(self, rbce);
+  
+  /* check for errors in the easy response and raise exceptions if anything went wrong and their is no on_failure handler */
+  if (rbce->last_result != 0 && rb_easy_nil("failure_proc")) {
+    raise_curl_easy_error_exception(rbce->last_result);
+  }
+
+  return rbce->last_result;
+}
+
 /***********************************************
  *
  * This is the main worker for the perform methods (get, post, head, put).
@@ -1818,18 +1870,23 @@ VALUE ruby_curl_easy_cleanup( VALUE self, ruby_curl_easy *rbce ) {
  */
 static VALUE handle_perform(VALUE self, ruby_curl_easy *rbce) {
 
-  VALUE ret;
-  VALUE multi = ruby_curl_multi_new(cCurlMulti);
+  if(rbce->use_easy_perform) {
+    return handle_easy_perform(self, rbce);
+  } else {
+    VALUE ret;
+    VALUE multi = ruby_curl_multi_new(cCurlMulti);
 
-  rb_funcall(multi, rb_intern("add"), 1, self );
-  ret = rb_funcall(multi, rb_intern("perform"), 0);
-
-  /* check for errors in the easy response and raise exceptions if anything went wrong and their is no on_failure handler */
-  if (rbce->last_result != 0 && rb_easy_nil("failure_proc")) {
-    raise_curl_easy_error_exception(rbce->last_result);
+    rb_funcall(multi, rb_intern("add"), 1, self);
+    rb_funcall(multi, rb_intern("pipeline="), 1, Qtrue);
+    ret = rb_funcall(multi, rb_intern("perform"), 0);
+  
+    /* check for errors in the easy response and raise exceptions if anything went wrong and their is no on_failure handler */
+    if (rbce->last_result != 0 && rb_easy_nil("failure_proc")) {
+      raise_curl_easy_error_exception(rbce->last_result);
+    }
+  
+    return ret;
   }
-
-  return ret;
 }
 
 /*
@@ -2986,4 +3043,8 @@ void init_curb_easy() {
   /* Runtime support */
   rb_define_method(cCurlEasy, "clone", ruby_curl_easy_clone, 0);
   rb_define_alias(cCurlEasy, "dup", "clone");
+  
+  rb_define_method(cCurlEasy, "use_easy_perform=", ruby_curl_easy_use_easy_perform_set, 1);
+  rb_define_method(cCurlEasy, "use_easy_perform?", ruby_curl_easy_use_easy_perform_q, 0);
+  rb_define_method(cCurlEasy, "reset", ruby_curl_easy_reset, 0);
 }
