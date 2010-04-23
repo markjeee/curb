@@ -554,6 +554,12 @@ class TestCurbCurlEasy < Test::Unit::TestCase
     assert_equal 'DELETE', curl.body_str
   end
 
+  def test_arbitrary_http_verb
+    curl = Curl::Easy.new(TestServlet.url)
+    curl.http('PURGE')
+    assert_equal 'PURGE', curl.body_str
+  end
+
   def test_head_remote
     curl = Curl::Easy.new(TestServlet.url)
     curl.http_head
@@ -682,6 +688,14 @@ class TestCurbCurlEasy < Test::Unit::TestCase
     curl.http_auth_types = :ntlm
     curl.perform
     assert_equal 'NTLM TlRMTVNTUAABAAAABoIIAAAAAAAAAAAAAAAAAAAAAAA=', $auth_header
+  end
+
+  def test_primary_ip
+    curl = Curl::Easy.new(TestServlet.url)
+    if curl.respond_to?(:primary_ip)
+      curl.perform
+      assert_equal '127.0.0.1', curl.primary_ip
+    end
   end
 
   include TestServerMethods 

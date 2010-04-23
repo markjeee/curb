@@ -255,11 +255,37 @@ void Init_curb_core() {
   /* Passed to on_debug handler to indicate that the data is protocol data sent to the peer. */
   rb_define_const(mCurl, "CURLINFO_DATA_OUT", INT2FIX(CURLINFO_DATA_OUT));
 
+  rb_define_const(mCurl, "CURL_MULTICWD",  INT2FIX(CURLFTPMETHOD_MULTICWD));
+  rb_define_const(mCurl, "CURL_NOCWD",     INT2FIX(CURLFTPMETHOD_NOCWD));
+  rb_define_const(mCurl, "CURL_SINGLECWD", INT2FIX(CURLFTPMETHOD_SINGLECWD));
+
   /* When passed to Curl::Easy#proxy_type , indicates that the proxy is an HTTP proxy. (libcurl >= 7.10) */
 #ifdef HAVE_CURLPROXY_HTTP
   rb_define_const(mCurl, "CURLPROXY_HTTP", INT2FIX(CURLPROXY_HTTP));
 #else
   rb_define_const(mCurl, "CURLPROXY_HTTP", INT2FIX(-1));
+#endif
+
+#ifdef CURL_VERSION_SSL
+  rb_define_const(mCurl, "CURL_SSLVERSION_DEFAULT", INT2FIX(CURL_SSLVERSION_DEFAULT));
+  rb_define_const(mCurl, "CURL_SSLVERSION_TLSv1",   INT2FIX(CURL_SSLVERSION_TLSv1));
+  rb_define_const(mCurl, "CURL_SSLVERSION_SSLv2",   INT2FIX(CURL_SSLVERSION_SSLv2));
+  rb_define_const(mCurl, "CURL_SSLVERSION_SSLv3",   INT2FIX(CURL_SSLVERSION_SSLv3));
+
+  rb_define_const(mCurl, "CURL_USESSL_CONTROL", INT2FIX(CURB_FTPSSL_CONTROL));
+  rb_define_const(mCurl, "CURL_USESSL_NONE", INT2FIX(CURB_FTPSSL_NONE));
+  rb_define_const(mCurl, "CURL_USESSL_TRY", INT2FIX(CURB_FTPSSL_TRY));
+  rb_define_const(mCurl, "CURL_USESSL_ALL", INT2FIX(CURB_FTPSSL_ALL));
+#else
+  rb_define_const(mCurl, "CURL_SSLVERSION_DEFAULT", INT2FIX(-1));
+  rb_define_const(mCurl, "CURL_SSLVERSION_TLSv1",   INT2FIX(-1));
+  rb_define_const(mCurl, "CURL_SSLVERSION_SSLv2",   INT2FIX(-1));
+  rb_define_const(mCurl, "CURL_SSLVERSION_SSLv3",   INT2FIX(-1));
+
+  rb_define_const(mCurl, "CURL_USESSL_CONTROL", INT2FIX(-1));
+  rb_define_const(mCurl, "CURL_USESSL_NONE", INT2FIX(-1));
+  rb_define_const(mCurl, "CURL_USESSL_TRY", INT2FIX(-1));
+  rb_define_const(mCurl, "CURL_USESSL_ALL", INT2FIX(-1));
 #endif
 
   /* When passed to Curl::Easy#proxy_type , indicates that the proxy is a SOCKS4 proxy. (libcurl >= 7.15.2) */

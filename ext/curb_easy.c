@@ -141,6 +141,11 @@ void curl_easy_free(ruby_curl_easy *rbce) {
   if (rbce->curl_headers) {
     curl_slist_free_all(rbce->curl_headers);
   }
+
+  if (rbce->curl_ftp_commands) {
+    curl_slist_free_all(rbce->curl_ftp_commands);
+  }
+
   curl_easy_cleanup(rbce->curl);
   free(rbce);
 }
@@ -176,6 +181,7 @@ static VALUE ruby_curl_easy_new(int argc, VALUE *argv, VALUE klass) {
   rb_easy_set("url", url);
 
   rbce->curl_headers = NULL;
+  rbce->curl_ftp_commands = NULL;
 
   /* various-typed opts */
   rbce->local_port = 0;
@@ -189,6 +195,9 @@ static VALUE ruby_curl_easy_new(int argc, VALUE *argv, VALUE klass) {
   rbce->connect_timeout = 0;
   rbce->dns_cache_timeout = 60;
   rbce->ftp_response_timeout = 0;
+  rbce->ssl_version = -1;
+  rbce->use_ssl = -1;
+  rbce->ftp_filemethod = -1;
 
   /* bool opts */
   rbce->proxy_tunnel = 0;
@@ -237,6 +246,7 @@ static VALUE ruby_curl_easy_clone(VALUE self) {
   memcpy(newrbce, rbce, sizeof(ruby_curl_easy));
   newrbce->curl = curl_easy_duphandle(rbce->curl);
   newrbce->curl_headers = NULL;
+  newrbce->curl_ftp_commands = NULL;
 
   return Data_Wrap_Struct(cCurlEasy, curl_easy_mark, curl_easy_free, newrbce);
 }
@@ -258,7 +268,7 @@ static VALUE ruby_curl_easy_url_set(VALUE self, VALUE url) {
 
 /*
  * call-seq:
- *   easy.url                                         => "http://some.url/"
+ *   easy.url                                         => string
  *
  * Obtain the URL that will be used by subsequent calls to +perform+.
  */
@@ -268,7 +278,7 @@ static VALUE ruby_curl_easy_url_get(VALUE self) {
 
 /*
  * call-seq:
- *   easy.proxy_url = "some.url"                      => "some.url"
+ *   easy.proxy_url = string                          => string
  *
  * Set the URL of the HTTP proxy to use for subsequent calls to +perform+.
  * The URL should specify the the host name or dotted IP address. To specify
@@ -297,7 +307,7 @@ static VALUE ruby_curl_easy_proxy_url_set(VALUE self, VALUE proxy_url) {
 
 /*
  * call-seq:
- *   easy.proxy_url                                   => "some.url"
+ *   easy.proxy_url                                   => string
  *
  * Obtain the HTTP Proxy URL that will be used by subsequent calls to +perform+.
  */
@@ -307,8 +317,8 @@ static VALUE ruby_curl_easy_proxy_url_get(VALUE self) {
 
 /*
  * call-seq:
- *   easy.headers = "Header: val"                              => ["Header: val", ...]
- *   easy.headers = {"Header" => "val" ..., "Header" => "val"} => ["Header: val", ...]
+ *   easy.headers = "Header: val"                              => "Header: val"
+ *   easy.headers = {"Header" => "val" ..., "Header" => "val"} => {"Header: val", ...}
  *   easy.headers = ["Header: val" ..., "Header: val"]         => ["Header: val", ...]
  *
  * Set custom HTTP headers for following requests. This can be used to add
@@ -333,7 +343,7 @@ static VALUE ruby_curl_easy_headers_set(VALUE self, VALUE headers) {
 
 /*
  * call-seq:
- *   easy.headers                                              => Hash, Array or Str
+ *   easy.headers                                     => Hash, Array or Str
  *
  * Obtain the custom HTTP headers for following requests.
  */
@@ -348,7 +358,7 @@ static VALUE ruby_curl_easy_headers_get(VALUE self) {
 
 /*
  * call-seq:
- *   easy.interface = "interface"                     => "interface"
+ *   easy.interface = string                          => string
  *
  * Set the interface name to use as the outgoing network interface.
  * The name can be an interface name, an IP address or a host name.
@@ -359,7 +369,7 @@ static VALUE ruby_curl_easy_interface_set(VALUE self, VALUE interface_hm) {
 
 /*
  * call-seq:
- *   easy.interface                                   => "interface"
+ *   easy.interface                                   => string
  *
  * Obtain the interface name that is used as the outgoing network interface.
  * The name can be an interface name, an IP address or a host name.
@@ -370,7 +380,7 @@ static VALUE ruby_curl_easy_interface_get(VALUE self) {
 
 /*
  * call-seq:
- *   easy.userpwd = "pwd string"                      => "pwd string"
+ *   easy.userpwd = string                            => string
  *
  * Set the username/password string to use for subsequent calls to +perform+.
  * The supplied string should have the form "username:password"
@@ -381,7 +391,7 @@ static VALUE ruby_curl_easy_userpwd_set(VALUE self, VALUE userpwd) {
 
 /*
  * call-seq:
- *   easy.userpwd                                     => "pwd string"
+ *   easy.userpwd                                     => string
  *
  * Obtain the username/password string that will be used for subsequent
  * calls to +perform+.
@@ -392,7 +402,7 @@ static VALUE ruby_curl_easy_userpwd_get(VALUE self) {
 
 /*
  * call-seq:
- *   easy.proxypwd = "pwd string"                     => "pwd string"
+ *   easy.proxypwd = string                           => string
  *
  * Set the username/password string to use for proxy connection during
  * subsequent calls to +perform+. The supplied string should have the
@@ -404,7 +414,7 @@ static VALUE ruby_curl_easy_proxypwd_set(VALUE self, VALUE proxypwd) {
 
 /*
  * call-seq:
- *   easy.proxypwd                                    => "pwd string"
+ *   easy.proxypwd                                    => string
  *
  * Obtain the username/password string that will be used for proxy
  * connection during subsequent calls to +perform+. The supplied string
@@ -417,7 +427,7 @@ static VALUE ruby_curl_easy_proxypwd_get(VALUE self) {
 
 /*
  * call-seq:
- *   easy.cookies = "name1=content1; name2=content2;"                => "pwd string"
+ *   easy.cookies = "name1=content1; name2=content2;" => string
  *
  * Set cookies to be sent by this Curl::Easy instance. The format of the string should
  * be NAME=CONTENTS, where NAME is the cookie name and CONTENTS is what the cookie should contain.
@@ -429,7 +439,7 @@ static VALUE ruby_curl_easy_cookies_set(VALUE self, VALUE cookies) {
 
 /*
  * call-seq:
- *   easy.cookies                                   => "name1=content1; name2=content2;"
+ *   easy.cookies                                     => "name1=content1; name2=content2;"
  *
  * Obtain the cookies for this Curl::Easy instance.
  */
@@ -439,7 +449,7 @@ static VALUE ruby_curl_easy_cookies_get(VALUE self) {
 
 /*
  * call-seq:
- *   easy.cookiefile = "cookies.txt"                => "pwd string"
+ *   easy.cookiefile = string                         => string
  *
  * Set a file that contains cookies to be sent in subsequent requests by this Curl::Easy instance.
  *
@@ -452,7 +462,7 @@ static VALUE ruby_curl_easy_cookiefile_set(VALUE self, VALUE cookiefile) {
 
 /*
  * call-seq:
- *   easy.cookiefile                                   => "cookies.txt"
+ *   easy.cookiefile                                  => string
  *
  * Obtain the cookiefile file for this Curl::Easy instance.
  */
@@ -462,7 +472,7 @@ static VALUE ruby_curl_easy_cookiefile_get(VALUE self) {
 
 /*
  * call-seq:
- *   easy.cookiejar = "cookiejar.file"                => "pwd string"
+ *   easy.cookiejar = string                          => string
  *
  * Set a cookiejar file to use for this Curl::Easy instance.
  * Cookies from the response will be written into this file.
@@ -476,7 +486,7 @@ static VALUE ruby_curl_easy_cookiejar_set(VALUE self, VALUE cookiejar) {
 
 /*
  * call-seq:
- *   easy.cookiejar                                   => "cookiejar.file"
+ *   easy.cookiejar                                   => string
  *
  * Obtain the cookiejar file to use for this Curl::Easy instance.
  */
@@ -486,7 +496,7 @@ static VALUE ruby_curl_easy_cookiejar_get(VALUE self) {
 
 /*
  * call-seq:
- *   easy.cert = "cert.file"                          => ""
+ *   easy.cert = string                               => ""
  *
  * Set a cert file to use for this Curl::Easy instance. This file
  * will be used to validate SSL connections.
@@ -498,7 +508,7 @@ static VALUE ruby_curl_easy_cert_set(VALUE self, VALUE cert) {
 
 /*
  * call-seq:
- *   easy.cert                                        => "cert.file"
+ *   easy.cert                                        => string
  *
  * Obtain the cert file to use for this Curl::Easy instance.
  */
@@ -508,7 +518,29 @@ static VALUE ruby_curl_easy_cert_get(VALUE self) {
 
 /*
  * call-seq:
- *   easy.cacert = "cacert.file"                      => ""
+ *   easy.cert_key = "cert_key.file"                  => ""
+ *
+ * Set a cert key to use for this Curl::Easy instance. This file
+ * will be used to validate SSL certificates.
+ *
+ */
+static VALUE ruby_curl_easy_cert_key_set(VALUE self, VALUE cert_key) {
+  CURB_OBJECT_HSETTER(ruby_curl_easy, cert_key);
+}
+
+/*
+ * call-seq:
+ *   easy.cert_key                                    => "cert_key.file"
+ *
+ * Obtain the cert key file to use for this Curl::Easy instance.
+ */
+static VALUE ruby_curl_easy_cert_key_get(VALUE self) {
+  CURB_OBJECT_HGETTER(ruby_curl_easy, cert_key);
+}
+
+/*
+ * call-seq:
+ *   easy.cacert = string                             => ""
  *
  * Set a cacert bundle to use for this Curl::Easy instance. This file
  * will be used to validate SSL certificates.
@@ -520,7 +552,7 @@ static VALUE ruby_curl_easy_cacert_set(VALUE self, VALUE cacert) {
 
 /*
  * call-seq:
- *   easy.cacert                                      => "cacert.file"
+ *   easy.cacert                                      => string
  *
  * Obtain the cacert file to use for this Curl::Easy instance.
  */
@@ -530,7 +562,7 @@ static VALUE ruby_curl_easy_cacert_get(VALUE self) {
 
 /*
  * call-seq:
- *   easy.certpassword = "cert password"                   => ""
+ *   easy.certpassword = string                       => ""
  *
  * Set a password used to open the specified cert
  */
@@ -552,7 +584,7 @@ static VALUE ruby_curl_easy_certtype_set(VALUE self, VALUE certtype) {
 
 /*
  * call-seq:
- *   easy.certtype                                  => "cert.type"
+ *   easy.certtype                                    => string
  *
  * Obtain the cert type used for this Curl::Easy instance
  */
@@ -562,7 +594,7 @@ static VALUE ruby_curl_easy_certtype_get(VALUE self) {
 
 /*
  * call-seq:
- *   easy.encoding=                                     => "string"
+ *   easy.encoding = string                           => string
  *
  * Set the accepted encoding types, curl will handle all of the decompression
  *
@@ -572,7 +604,7 @@ static VALUE ruby_curl_easy_encoding_set(VALUE self, VALUE encoding) {
 }
 /*
  * call-seq:
- *   easy.encoding                                     => "string"
+ *   easy.encoding                                    => string
  *
  * Get the set encoding types
  *
@@ -583,7 +615,7 @@ static VALUE ruby_curl_easy_encoding_get(VALUE self) {
 
 /*
  * call-seq:
- *   easy.useragent = "Ruby/Curb"                      => ""
+ *   easy.useragent = "Ruby/Curb"                     => ""
  *
  * Set the user agent string for this Curl::Easy instance
  *
@@ -604,7 +636,7 @@ static VALUE ruby_curl_easy_useragent_get(VALUE self) {
 
 /*
  * call-seq:
- *   easy.post_body = "some=form%20data&to=send" => string or nil
+ *   easy.post_body = "some=form%20data&to=send"      => string or nil
  * 
  * Sets the POST body of this Curl::Easy instance.  This is expected to be
  * URL encoded; no additional processing or encoding is done on the string.
@@ -648,7 +680,7 @@ static VALUE ruby_curl_easy_post_body_set(VALUE self, VALUE post_body) {
 
 /*
  * call-seq:
- *   easy.post_body                                  => "string" or nil
+ *   easy.post_body                                  => string or nil
  *
  * Obtain the POST body used in this Curl::Easy instance.
  */
@@ -668,6 +700,7 @@ static VALUE ruby_curl_easy_put_data_set(VALUE self, VALUE data) {
   ruby_curl_easy *rbce;
   CURL *curl;
   VALUE upload;
+  VALUE headers;
 
   Data_Get_Struct(self, ruby_curl_easy, rbce);
 
@@ -694,7 +727,7 @@ static VALUE ruby_curl_easy_put_data_set(VALUE self, VALUE data) {
     }
   }
 
-  VALUE headers = rb_easy_get("headers");
+  headers = rb_easy_get("headers");
   if( headers == Qnil ) { 
     headers = rb_hash_new();
   }
@@ -725,6 +758,24 @@ static VALUE ruby_curl_easy_put_data_set(VALUE self, VALUE data) {
   
   // if we made it this far, all should be well.
   return data;
+}
+
+/*
+ * call-seq:
+ *   easy.ftp_commands = ["CWD /", "MKD directory"]   => ["CWD /", ...]
+ *
+ * Explicitly sets the list of commands to execute on the FTP server when calling perform
+ */
+static VALUE ruby_curl_easy_ftp_commands_set(VALUE self, VALUE ftp_commands) {
+  CURB_OBJECT_HSETTER(ruby_curl_easy, ftp_commands);
+}
+
+/*
+ * call-seq
+ *   easy.ftp_commands                                => array or nil
+ */
+static VALUE ruby_curl_easy_ftp_commands_get(VALUE self) {
+  CURB_OBJECT_HGETTER(ruby_curl_easy, ftp_commands);
 }
 
 /* ================== IMMED ATTRS ==================*/
@@ -858,11 +909,13 @@ static VALUE ruby_curl_easy_proxy_type_get(VALUE self) {
 static VALUE ruby_curl_easy_http_auth_types_set(int argc, VALUE *argv, VALUE self) {//VALUE self, VALUE http_auth_types) {
   ruby_curl_easy *rbce;
   VALUE args_ary;
-  rb_scan_args(argc, argv, "*", &args_ary);
-  Data_Get_Struct(self, ruby_curl_easy, rbce);
-  int i, len = RARRAY_LEN(args_ary);
+  int i, len;
   char* node = NULL;
   long mask = 0x000000;
+
+  rb_scan_args(argc, argv, "*", &args_ary);
+  Data_Get_Struct(self, ruby_curl_easy, rbce);
+  len = RARRAY_LEN(args_ary);
 
   if (len == 1 && (TYPE(rb_ary_entry(args_ary,0)) == T_FIXNUM || rb_ary_entry(args_ary,0) == Qnil)) {
     if (rb_ary_entry(args_ary,0) == Qnil) { 
@@ -1050,7 +1103,7 @@ static VALUE ruby_curl_easy_ftp_response_timeout_get(VALUE self, VALUE ftp_respo
 
 /*
  * call-seq:
- *   easy.username = "foo"  => String
+ *   easy.username = string                           => string
  *
  * Set the HTTP Authentication username.
  */
@@ -1064,7 +1117,7 @@ static VALUE ruby_curl_easy_username_set(VALUE self, VALUE username) {
 
 /*
  * call-seq:
- *   easy.username   => String
+ *   easy.username                                    => string
  * 
  * Get the current username
  */
@@ -1078,7 +1131,7 @@ static VALUE ruby_curl_easy_username_get(VALUE self, VALUE username) {
 
 /*
  * call-seq:
- *   easy.password = "foo"  => String
+ *   easy.password = string                           => string
  *
  * Set the HTTP Authentication password.
  */
@@ -1092,7 +1145,7 @@ static VALUE ruby_curl_easy_password_set(VALUE self, VALUE password) {
 
 /*
  * call-seq:
- *   easy.password   => String
+ *   easy.password                                    => string
  * 
  * Get the current password
  */
@@ -1104,11 +1157,75 @@ static VALUE ruby_curl_easy_password_get(VALUE self, VALUE password) {
 #endif
 }
 
+/*
+ * call-seq:
+ *   easy.ssl_version = value                         => fixnum or nil
+ *
+ * Sets the version of SSL/TLS that libcurl will attempt to use. Valid
+ * options are Curl::CURL_SSLVERSION_TLSv1, Curl::CURL_SSLVERSION::SSLv2,
+ * Curl::CURL_SSLVERSION_SSLv3 and Curl::CURL_SSLVERSION_DEFAULT
+ */
+static VALUE ruby_curl_easy_ssl_version_set(VALUE self, VALUE ssl_version) {
+  CURB_IMMED_SETTER(ruby_curl_easy, ssl_version, -1);
+}
+
+/*
+ * call-seq:
+ *   easy.ssl_version                                 => fixnum
+ *
+ * Get the version of SSL/TLS that libcurl will attempt to use.
+ */
+static VALUE ruby_curl_easy_ssl_version_get(VALUE self, VALUE ssl_version) {
+  CURB_IMMED_GETTER(ruby_curl_easy, ssl_version, -1);
+}
+
+/*
+ * call-seq:
+ *   easy.use_ssl = value                             => fixnum or nil
+ * 
+ * Ensure libcurl uses SSL for FTP connections. Valid options are Curl::CURL_USESSL_NONE,
+ * Curl::CURL_USESSL_TRY, Curl::CURL_USESSL_CONTROL, and Curl::CURL_USESSL_ALL.
+ */
+static VALUE ruby_curl_easy_use_ssl_set(VALUE self, VALUE use_ssl) {
+  CURB_IMMED_SETTER(ruby_curl_easy, use_ssl, -1);
+}
+
+/*
+ * call-seq:
+ *   easy.use_ssl                                     => fixnum
+ *
+ * Get the desired level for using SSL on FTP connections.
+ */
+static VALUE ruby_curl_easy_use_ssl_get(VALUE self, VALUE use_ssl) {
+  CURB_IMMED_GETTER(ruby_curl_easy, use_ssl, -1);
+}
+
+/*
+ * call-seq:
+ *   easy.ftp_filemethod = value                      => fixnum or nil
+ *
+ * Controls how libcurl reaches files on the server. Valid options are Curl::CURL_MULTICWD,
+ * Curl::CURL_NOCWD, and Curl::CURL_SINGLECWD (see libcurl docs for CURLOPT_FTP_METHOD).
+ */
+static VALUE ruby_curl_easy_ftp_filemethod_set(VALUE self, VALUE ftp_filemethod) {
+  CURB_IMMED_SETTER(ruby_curl_easy, ftp_filemethod, -1);
+}
+
+/*
+ * call-seq
+ *   easy.ftp_filemethod                              => fixnum
+ *
+ * Get the configuration for how libcurl will reach files on the server.
+ */
+static VALUE ruby_curl_easy_ftp_filemethod_get(VALUE self, VALUE ftp_filemethod) {
+  CURB_IMMED_GETTER(ruby_curl_easy, ftp_filemethod, -1);
+}
+
 /* ================== BOOL ATTRS ===================*/
 
 /*
  * call-seq:
- *   proxy_tunnel = boolean                           => boolean
+ *   easy.proxy_tunnel = boolean                      => boolean
  *
  * Configure whether this Curl instance will use proxy tunneling.
  */
@@ -1118,7 +1235,7 @@ static VALUE ruby_curl_easy_proxy_tunnel_set(VALUE self, VALUE proxy_tunnel) {
 
 /*
  * call-seq:
- *   proxy_tunnel?                                    => boolean
+ *   easy.proxy_tunnel?                               => boolean
  *
  * Determine whether this Curl instance will use proxy tunneling.
  */
@@ -1128,7 +1245,7 @@ static VALUE ruby_curl_easy_proxy_tunnel_q(VALUE self) {
 
 /*
  * call-seq:
- *   fetch_file_time = boolean                        => boolean
+ *   easy.fetch_file_time = boolean                   => boolean
  *
  * Configure whether this Curl instance will fetch remote file
  * times, if available.
@@ -1139,7 +1256,7 @@ static VALUE ruby_curl_easy_fetch_file_time_set(VALUE self, VALUE fetch_file_tim
 
 /*
  * call-seq:
- *   fetch_file_time?                                 => boolean
+ *   easy.fetch_file_time?                            => boolean
  *
  * Determine whether this Curl instance will fetch remote file
  * times, if available.
@@ -1150,7 +1267,7 @@ static VALUE ruby_curl_easy_fetch_file_time_q(VALUE self) {
 
 /*
  * call-seq:
- *   ssl_verify_peer = boolean                        => boolean
+ *   easy.ssl_verify_peer = boolean                   => boolean
  *
  * Configure whether this Curl instance will verify the SSL peer
  * certificate. When true (the default), and the verification fails to
@@ -1168,7 +1285,7 @@ static VALUE ruby_curl_easy_ssl_verify_peer_set(VALUE self, VALUE ssl_verify_pee
 
 /*
  * call-seq:
- *   ssl_verify_peer?                                 => boolean
+ *   easy.ssl_verify_peer?                            => boolean
  *
  * Determine whether this Curl instance will verify the SSL peer
  * certificate.
@@ -1179,7 +1296,7 @@ static VALUE ruby_curl_easy_ssl_verify_peer_q(VALUE self) {
 
 /*
  * call-seq:
- *   ssl_verify_host = boolean                        => boolean
+ *   easy.ssl_verify_host = boolean                   => boolean
  *
  * Configure whether this Curl instance will verify that the server cert
  * is for the server it is known as. When true (the default) the server
@@ -1196,7 +1313,7 @@ static VALUE ruby_curl_easy_ssl_verify_host_set(VALUE self, VALUE ssl_verify_hos
 
 /*
  * call-seq:
- *   ssl_verify_host?                                 => boolean
+ *   easy.ssl_verify_host?                            => boolean
  *
  * Determine whether this Curl instance will verify that the server cert
  * is for the server it is known as.
@@ -1207,7 +1324,7 @@ static VALUE ruby_curl_easy_ssl_verify_host_q(VALUE self) {
 
 /*
  * call-seq:
- *   header_in_body = boolean                         => boolean
+ *   easy.header_in_body = boolean                    => boolean
  *
  * Configure whether this Curl instance will return HTTP headers
  * combined with body data. If this option is set true, both header
@@ -1219,7 +1336,7 @@ static VALUE ruby_curl_easy_header_in_body_set(VALUE self, VALUE header_in_body)
 
 /*
  * call-seq:
- *   header_in_body?                                  => boolean
+ *   easy.header_in_body?                             => boolean
  *
  * Determine whether this Curl instance will verify the SSL peer
  * certificate.
@@ -1230,7 +1347,7 @@ static VALUE ruby_curl_easy_header_in_body_q(VALUE self) {
 
 /*
  * call-seq:
- *   use_netrc = boolean                              => boolean
+ *   easy.use_netrc = boolean                         => boolean
  *
  * Configure whether this Curl instance will use data from the user's
  * .netrc file for FTP connections.
@@ -1241,7 +1358,7 @@ static VALUE ruby_curl_easy_use_netrc_set(VALUE self, VALUE use_netrc) {
 
 /*
  * call-seq:
- *   use_netrc?                                       => boolean
+ *   easy.use_netrc?                                  => boolean
  *
  * Determine whether this Curl instance will use data from the user's
  * .netrc file for FTP connections.
@@ -1252,7 +1369,7 @@ static VALUE ruby_curl_easy_use_netrc_q(VALUE self) {
 
 /*
  * call-seq:
- *   follow_location = boolean                        => boolean
+ *   easy.follow_location = boolean                   => boolean
  *
  * Configure whether this Curl instance will follow Location: headers
  * in HTTP responses. Redirects will only be followed to the extent
@@ -1264,7 +1381,7 @@ static VALUE ruby_curl_easy_follow_location_set(VALUE self, VALUE follow_locatio
 
 /*
  * call-seq:
- *   follow_location?                                 => boolean
+ *   easy.follow_location?                            => boolean
  *
  * Determine whether this Curl instance will follow Location: headers
  * in HTTP responses.
@@ -1275,7 +1392,7 @@ static VALUE ruby_curl_easy_follow_location_q(VALUE self) {
 
 /*
  * call-seq:
- *   unrestricted_auth = boolean                      => boolean
+ *   easy.unrestricted_auth = boolean                 => boolean
  *
  * Configure whether this Curl instance may use any HTTP authentication
  * method available when necessary.
@@ -1286,7 +1403,7 @@ static VALUE ruby_curl_easy_unrestricted_auth_set(VALUE self, VALUE unrestricted
 
 /*
  * call-seq:
- *   unrestricted_auth?                               => boolean
+ *   easy.unrestricted_auth?                          => boolean
  *
  * Determine whether this Curl instance may use any HTTP authentication
  * method available when necessary.
@@ -1360,7 +1477,7 @@ static VALUE ruby_curl_easy_enable_cookies_set(VALUE self, VALUE enable_cookies)
 
 /*
  * call-seq:
- *   easy.enable_cookies?                        => boolean
+ *   easy.enable_cookies?                             => boolean
  *
  * Determine whether the libcurl cookie engine is enabled for this
  * Curl::Easy instance.
@@ -1392,7 +1509,7 @@ static VALUE ruby_curl_easy_on_body_set(int argc, VALUE *argv, VALUE self) {
 
 /*
  * call-seq:
- *   easy.on_success { |easy| ... }                 => &lt;old handler&gt;
+ *   easy.on_success { |easy| ... }                   => &lt;old handler&gt;
  *
  * Assign or remove the +on_success+ handler for this Curl::Easy instance.
  * To remove a previously-supplied handler, call this method with no
@@ -1407,7 +1524,7 @@ static VALUE ruby_curl_easy_on_success_set(int argc, VALUE *argv, VALUE self) {
 
 /*
  * call-seq:
- *   easy.on_failure {|easy,code| ... }                 => &lt;old handler&gt;
+ *   easy.on_failure {|easy,code| ... }               => &lt;old handler&gt;
  *
  * Assign or remove the +on_failure+ handler for this Curl::Easy instance.
  * To remove a previously-supplied handler, call this method with no
@@ -1422,7 +1539,7 @@ static VALUE ruby_curl_easy_on_failure_set(int argc, VALUE *argv, VALUE self) {
 
 /*
  * call-seq:
- *   easy.on_complete {|easy| ... }                 => &lt;old handler&gt;
+ *   easy.on_complete {|easy| ... }                   => &lt;old handler&gt;
  *
  * Assign or remove the +on_complete+ handler for this Curl::Easy instance.
  * To remove a previously-supplied handler, call this method with no
@@ -1525,6 +1642,16 @@ static VALUE cb_each_http_header(VALUE header, struct curl_slist **list) {
 }
 
 /***********************************************
+ * This is an rb_iterate callback used to set up ftp commands.
+ */
+static VALUE cb_each_ftp_command(VALUE ftp_command, struct curl_slist **list) {
+  VALUE ftp_command_string = rb_obj_as_string(ftp_command);
+  *list = curl_slist_append(*list, StringValuePtr(ftp_command));
+
+  return ftp_command_string;
+}
+
+/***********************************************
  *
  * Setup a connection
  *
@@ -1535,6 +1662,7 @@ VALUE ruby_curl_easy_setup( ruby_curl_easy *rbce ) {
   CURL *curl;
   VALUE url, _url = rb_easy_get("url");
   struct curl_slist **hdrs = &(rbce->curl_headers);
+  struct curl_slist **cmds = &(rbce->curl_ftp_commands);
 
   curl = rbce->curl;
 
@@ -1748,6 +1876,9 @@ VALUE ruby_curl_easy_setup( ruby_curl_easy *rbce ) {
     if (!rb_easy_nil("certpassword")) {
       curl_easy_setopt(curl, CURLOPT_SSLCERTPASSWD, rb_easy_get_str("certpassword"));
     }
+    if (!rb_easy_nil("cert_key")) {
+      curl_easy_setopt(curl, CURLOPT_SSLKEY, rb_easy_get_str("cert_key"));
+    }
   }
   if (!rb_easy_nil("cacert")) {
 #ifdef HAVE_CURL_CONFIG_CA
@@ -1756,7 +1887,25 @@ VALUE ruby_curl_easy_setup( ruby_curl_easy *rbce ) {
     curl_easy_setopt(curl, CURLOPT_CAINFO, "/usr/local/share/curl/curl-ca-bundle.crt");
 #endif
   }
+
+#ifdef CURL_VERSION_SSL
+  if (rbce->ssl_version > 0) {
+    curl_easy_setopt(curl, CURLOPT_SSLVERSION, rbce->ssl_version);
+  }
+
+  if (rbce->use_ssl > 0) {
+    curl_easy_setopt(curl, CURB_FTPSSL, rbce->use_ssl);
+  }
+#else
+  if (rbce->ssl_version > 0 || rbce->use_ssl > 0) {
+    rb_warn("libcurl is not configured with SSL support");
+  }
+#endif
   
+  if (rbce->ftp_filemethod > 0) {
+    curl_easy_setopt(curl, CURLOPT_FTP_FILEMETHOD, rbce->ftp_filemethod);
+  }
+
   /* Set the user-agent string if specified */
   if (!rb_easy_nil("useragent")) {
     curl_easy_setopt(curl, CURLOPT_USERAGENT, rb_easy_get_str("useragent"));
@@ -1778,6 +1927,17 @@ VALUE ruby_curl_easy_setup( ruby_curl_easy *rbce ) {
     }
   }
 
+  /* Setup FTP commands if necessary */
+  if (!rb_easy_nil("ftp_commands")) {
+    if (rb_easy_type_check("ftp_commands", T_ARRAY)) {
+      rb_iterate(rb_each, rb_easy_get("ftp_commands"), cb_each_ftp_command, (VALUE)cmds);
+    }
+
+    if (*cmds) {
+      curl_easy_setopt(curl, CURLOPT_QUOTE, *cmds);
+    }
+  }
+
   return Qnil;
 }
 /***********************************************
@@ -1794,6 +1954,12 @@ VALUE ruby_curl_easy_cleanup( VALUE self, ruby_curl_easy *rbce ) {
   if (headers) {
     curl_slist_free_all(headers);
     rbce->curl_headers = NULL;
+  }
+
+  struct curl_slist *ftp_commands = rbce->curl_ftp_commands;
+  if (ftp_commands) {
+    curl_slist_free_all(ftp_commands);
+    rbce->curl_ftp_commands = NULL;
   }
 
   // clean up a PUT request's curl options.
@@ -1910,6 +2076,26 @@ static VALUE ruby_curl_easy_perform_get(VALUE self) {
 }
 
 /*
+ * Common implementation of easy.http(verb) and easy.http_delete
+ */
+static VALUE ruby_curl_easy_perform_verb_str(VALUE self, char *verb) {
+  ruby_curl_easy *rbce;
+  CURL *curl;
+  VALUE retval;
+
+  Data_Get_Struct(self, ruby_curl_easy, rbce);
+  curl = rbce->curl;
+
+  curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, verb);
+
+  retval = handle_perform(self,rbce);
+
+  curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, NULL);
+
+  return retval;
+}
+
+/*
  * call-seq:
  *   easy.http_delete
  *
@@ -1918,20 +2104,18 @@ static VALUE ruby_curl_easy_perform_get(VALUE self) {
  * an exception (defined under Curl::Err) on error.
  */
 static VALUE ruby_curl_easy_perform_delete(VALUE self) {
-  ruby_curl_easy *rbce;
-  CURL *curl;
-  VALUE retval;
+  return ruby_curl_easy_perform_verb_str(self, "DELETE");
+}
 
-  Data_Get_Struct(self, ruby_curl_easy, rbce);
-  curl = rbce->curl;
-
-  curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, "DELETE");
-
-  retval = handle_perform(self,rbce);
-
-  curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, NULL);
-
-  return retval;
+/*
+ * call-seq:
+ *   easy.http(verb)
+ *
+ * Send an HTTP request with method set to verb, using the current options set for this Curl::Easy instance.
+ * This method always returns true or raises an exception (defined under Curl::Err) on error.
+ */
+static VALUE ruby_curl_easy_perform_verb(VALUE self, VALUE verb) {
+  return ruby_curl_easy_perform_verb_str(self, RSTRING_PTR(verb));
 }
 
 /*
@@ -2203,6 +2387,30 @@ static VALUE ruby_curl_easy_response_code_get(VALUE self) {
   return LONG2NUM(code);
 }
 
+#if defined(HAVE_CURLINFO_PRIMARY_IP)
+/*
+ * call-seq:
+ *   easy.primary_ip                                  => "xx.xx.xx.xx" or nil
+ *
+ *   Retrieve the resolved IP of the most recent connection
+ *   done with this curl handle. This string may be  IPv6 if
+ *   that's enabled. This feature requires curl 7.19.x and above
+ */
+static VALUE ruby_curl_easy_primary_ip_get(VALUE self) {
+  ruby_curl_easy *rbce;
+  char* ip;
+  
+  Data_Get_Struct(self, ruby_curl_easy, rbce);
+  curl_easy_getinfo(rbce->curl, CURLINFO_PRIMARY_IP, &ip);
+
+  if (ip && ip[0]) {    // curl returns empty string if none
+    return rb_str_new2(ip);
+  } else {
+    return Qnil;
+  }
+}
+#endif
+
 /*
  * call-seq:
  *   easy.http_connect_code                           => fixnum
@@ -2367,7 +2575,7 @@ static VALUE ruby_curl_easy_redirect_time_get(VALUE self) {
 
 /*
  * call-seq:
- *   easy.redirect_count                           => integer
+ *   easy.redirect_count                            => integer
  *
  * Retrieve the total number of redirections that were actually followed.
  *
@@ -2615,7 +2823,7 @@ static VALUE ruby_curl_easy_os_errno_get(VALUE self) {
 
 /*
  * call-seq:
- *   easy.num_connects                                    => integer
+ *   easy.num_connects                                => integer
  *
  * Retrieve the number of new connections libcurl had to create to achieve
  * the previous transfer (only the successful connects are counted).
@@ -2660,7 +2868,7 @@ Pass a pointer to a long to receive the last socket used by this curl session. I
 
 /*
  * call-seq:
- *   easy.content_type                                => "content/type" or nil
+ *   easy.ftp_entry_path                                => "C:\ftp\root\" or nil
  *
  * Retrieve the path of the entry path. That is the initial path libcurl ended
  * up in when logging on to the remote FTP server. This returns +nil+ if
@@ -2689,7 +2897,7 @@ static VALUE ruby_curl_easy_ftp_entry_path_get(VALUE self) {
 
 /*
  * call-seq:
- *   easy.inspect                                => "#<Curl::Easy http://google.com/>"
+ *   easy.inspect                                     => "#<Curl::Easy http://google.com/>"
  */
 static VALUE ruby_curl_easy_inspect(VALUE self) {
   char buf[64];
@@ -2745,7 +2953,7 @@ static VALUE ruby_curl_easy_escape(VALUE self, VALUE svalue) {
 
 /*
  * call-seq:
- *   easy.unescape("some%20text")                       => "some text"
+ *   easy.unescape("some%20text")                     => "some text"
  *
  * Convert the given URL encoded input string to a "plain string" and return
  * the result. All input characters that are URL encoded (%XX where XX is a
@@ -2816,7 +3024,7 @@ static VALUE ruby_curl_easy_class_perform_get(int argc, VALUE *argv, VALUE klass
 
 /*
  * call-seq:
- *   Curl::Easy.http_delete(url) { |easy| ... }          => #&lt;Curl::Easy...&gt;
+ *   Curl::Easy.http_delete(url) { |easy| ... }       => #&lt;Curl::Easy...&gt;
  *
  * Convenience method that creates a new Curl::Easy instance with
  * the specified URL and calls +http_delete+, before returning the new instance.
@@ -2833,7 +3041,7 @@ static VALUE ruby_curl_easy_class_perform_delete(int argc, VALUE *argv, VALUE kl
 
 /*
  * call-seq:
- *   Curl::Easy.http_head(url) { |easy| ... }          => #&lt;Curl::Easy...&gt;
+ *   Curl::Easy.http_head(url) { |easy| ... }         => #&lt;Curl::Easy...&gt;
  *
  * Convenience method that creates a new Curl::Easy instance with
  * the specified URL and calls +http_head+, before returning the new instance.
@@ -2925,6 +3133,8 @@ void init_curb_easy() {
   rb_define_method(cCurlEasy, "cookiejar", ruby_curl_easy_cookiejar_get, 0);
   rb_define_method(cCurlEasy, "cert=", ruby_curl_easy_cert_set, 1);
   rb_define_method(cCurlEasy, "cert", ruby_curl_easy_cert_get, 0);
+  rb_define_method(cCurlEasy, "cert_key=", ruby_curl_easy_cert_key_set, 1);
+  rb_define_method(cCurlEasy, "cert_key", ruby_curl_easy_cert_key_get, 0);
   rb_define_method(cCurlEasy, "cacert=", ruby_curl_easy_cacert_set, 1);
   rb_define_method(cCurlEasy, "cacert", ruby_curl_easy_cacert_get, 0);
   rb_define_method(cCurlEasy, "certpassword=", ruby_curl_easy_certpassword_set, 1);
@@ -2937,6 +3147,8 @@ void init_curb_easy() {
   rb_define_method(cCurlEasy, "post_body=", ruby_curl_easy_post_body_set, 1);
   rb_define_method(cCurlEasy, "post_body", ruby_curl_easy_post_body_get, 0);
   rb_define_method(cCurlEasy, "put_data=", ruby_curl_easy_put_data_set, 1);
+  rb_define_method(cCurlEasy, "ftp_commands=", ruby_curl_easy_ftp_commands_set, 1);
+  rb_define_method(cCurlEasy, "ftp_commands", ruby_curl_easy_ftp_commands_get, 0);
 
   rb_define_method(cCurlEasy, "local_port=", ruby_curl_easy_local_port_set, 1);
   rb_define_method(cCurlEasy, "local_port", ruby_curl_easy_local_port_get, 0);
@@ -2960,6 +3172,12 @@ void init_curb_easy() {
   rb_define_method(cCurlEasy, "dns_cache_timeout", ruby_curl_easy_dns_cache_timeout_get, 0);
   rb_define_method(cCurlEasy, "ftp_response_timeout=", ruby_curl_easy_ftp_response_timeout_set, 1);
   rb_define_method(cCurlEasy, "ftp_response_timeout", ruby_curl_easy_ftp_response_timeout_get, 0);
+  rb_define_method(cCurlEasy, "ssl_version=", ruby_curl_easy_ssl_version_set, 1);
+  rb_define_method(cCurlEasy, "ssl_version", ruby_curl_easy_ssl_version_get, 0);
+  rb_define_method(cCurlEasy, "use_ssl=", ruby_curl_easy_use_ssl_set, 1);
+  rb_define_method(cCurlEasy, "use_ssl", ruby_curl_easy_use_ssl_get, 0);
+  rb_define_method(cCurlEasy, "ftp_filemethod=", ruby_curl_easy_ftp_filemethod_set, 1);
+  rb_define_method(cCurlEasy, "ftp_filemethod", ruby_curl_easy_ftp_filemethod_get, 0);
 
   rb_define_method(cCurlEasy, "username=", ruby_curl_easy_username_set, 1);
   rb_define_method(cCurlEasy, "username", ruby_curl_easy_username_get, 0);
@@ -2998,6 +3216,7 @@ void init_curb_easy() {
   rb_define_method(cCurlEasy, "on_complete", ruby_curl_easy_on_complete_set, -1);
 
   rb_define_method(cCurlEasy, "perform", ruby_curl_easy_perform, 0);
+  rb_define_method(cCurlEasy, "http", ruby_curl_easy_perform_verb, 1);
   rb_define_method(cCurlEasy, "http_delete", ruby_curl_easy_perform_delete, 0);
   rb_define_method(cCurlEasy, "http_get", ruby_curl_easy_perform_get, 0);
   rb_define_method(cCurlEasy, "http_post", ruby_curl_easy_perform_post, -1);
@@ -3012,6 +3231,9 @@ void init_curb_easy() {
 
   rb_define_method(cCurlEasy, "last_effective_url", ruby_curl_easy_last_effective_url_get, 0);
   rb_define_method(cCurlEasy, "response_code", ruby_curl_easy_response_code_get, 0);
+#if defined(HAVE_CURLINFO_PRIMARY_IP)
+  rb_define_method(cCurlEasy, "primary_ip", ruby_curl_easy_primary_ip_get, 0);
+#endif
   rb_define_method(cCurlEasy, "http_connect_code", ruby_curl_easy_http_connect_code_get, 0);
   rb_define_method(cCurlEasy, "file_time", ruby_curl_easy_file_time_get, 0);
   rb_define_method(cCurlEasy, "total_time", ruby_curl_easy_total_time_get, 0);
