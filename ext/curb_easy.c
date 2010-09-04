@@ -2098,21 +2098,6 @@ static VALUE ruby_curl_easy_use_easy_perform_q(VALUE self) {
 }
 
 /*
- * call-seq:
- *   easy.reset => nil
- */
-static VALUE ruby_curl_easy_reset(VALUE self) {
-  ruby_curl_easy *rbce;
-
-  Data_Get_Struct(self, ruby_curl_easy, rbce);
-
-  curl_easy_cleanup(rbce->curl);
-  rbce->curl = curl_easy_init();
-
-  return Qnil;
-}
-
-/*
  * THIS IS A HACK. Copied to be able to re-use the curl handle.
  */
 static VALUE handle_easy_perform(VALUE self, ruby_curl_easy *rbce) {
@@ -3431,9 +3416,9 @@ void init_curb_easy() {
   /* Runtime support */
   rb_define_method(cCurlEasy, "clone", ruby_curl_easy_clone, 0);
   rb_define_alias(cCurlEasy, "dup", "clone");
+  rb_define_method(cCurlEasy, "inspect", ruby_curl_easy_inspect, 0);
 
+  /* Easy perform extensions, by @markjeee */
   rb_define_method(cCurlEasy, "use_easy_perform=", ruby_curl_easy_use_easy_perform_set, 1);
   rb_define_method(cCurlEasy, "use_easy_perform?", ruby_curl_easy_use_easy_perform_q, 0);
-  rb_define_method(cCurlEasy, "reset", ruby_curl_easy_reset, 0);
-  rb_define_method(cCurlEasy, "inspect", ruby_curl_easy_inspect, 0);
 }
