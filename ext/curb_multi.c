@@ -32,6 +32,7 @@ static long cCurlMutiDefaulttimeout = 100; /* milliseconds */
 
 static void rb_curl_multi_remove(ruby_curl_multi *rbcm, VALUE easy);
 static void rb_curl_multi_read_info(VALUE self, CURLM *mptr);
+static void rb_curl_multi_run(VALUE self, CURLM *multi_handle, int *still_running);
 
 static void rb_curl_multi_mark_all_easy(VALUE key, VALUE rbeasy, ruby_curl_multi *rbcm) {
   rb_gc_mark(rbeasy);
@@ -83,6 +84,9 @@ VALUE ruby_curl_multi_new(VALUE klass) {
   ruby_curl_multi *rbcm = ALLOC(ruby_curl_multi);
 
   rbcm->handle = curl_multi_init();
+  if (!rbcm->handle) {
+    rb_raise(mCurlErrFailedInit, "Failed to initialize multi handle");
+  }
 
   rbcm->requests = rb_hash_new();
 
@@ -236,6 +240,8 @@ VALUE ruby_curl_multi_add(VALUE self, VALUE easy) {
 
   rb_hash_aset( rbcm->requests, easy, easy );
 
+  rb_curl_multi_run( self, rbcm->handle, &(rbcm->running) );
+
   return self;
 }
 
@@ -322,13 +328,19 @@ static void rb_curl_mutli_handle_complete(VALUE self, CURL *easy_handle, int res
 
   Data_Get_Struct(easy, ruby_curl_easy, rbce);
 
-  if (ecode != 0) {
-    raise_curl_easy_error_exception(ecode);
-  }
-
   rbce->last_result = result; /* save the last easy result code */
 
   ruby_curl_multi_remove( self, easy );
+
+  /* after running a request cleanup the headers, these are set before each request */
+  if (rbce->curl_headers) {
+    curl_slist_free_all(rbce->curl_headers);
+    rbce->curl_headers = NULL;
+  }
+
+  if (ecode != 0) {
+    raise_curl_easy_error_exception(ecode);
+  }
 
   if (!rb_easy_nil("complete_proc")) {
     rb_funcall( rb_easy_get("complete_proc"), idCall, 1, easy );
@@ -350,6 +362,7 @@ static void rb_curl_mutli_handle_complete(VALUE self, CURL *easy_handle, int res
           (response_code >= 300 && response_code <= 999)) {
     rb_funcall( rb_easy_get("failure_proc"), idCall, 2, easy, rb_curl_easy_error(result) );
   }
+
 }
 
 static void rb_curl_multi_read_info(VALUE self, CURLM *multi_handle) {
@@ -380,8 +393,7 @@ static void rb_curl_multi_run(VALUE self, CURLM *multi_handle, int *still_runnin
   if (mcode != CURLM_OK) {
     raise_curl_multi_error_exception(mcode);
   }
-
-  rb_curl_multi_read_info( self, multi_handle );
+  
 }
 
 /*
@@ -413,66 +425,72 @@ VALUE ruby_curl_multi_perform(int argc, VALUE *argv, VALUE self) {
 
   Data_Get_Struct(self, ruby_curl_multi, rbcm);
 
+  timeout_milliseconds = cCurlMutiDefaulttimeout;
+
   rb_curl_multi_run( self, rbcm->handle, &(rbcm->running) );
-
-  while(rbcm->running) {
-    FD_ZERO(&fdread);
-    FD_ZERO(&fdwrite);
-    FD_ZERO(&fdexcep);
-
-    /* load the fd sets from the multi handle */
-    mcode = curl_multi_fdset(rbcm->handle, &fdread, &fdwrite, &fdexcep, &maxfd);
-    if (mcode != CURLM_OK) {
-      raise_curl_multi_error_exception(mcode);
-    }
+ 
+  do {
+    while (rbcm->running) {
 
 #ifdef HAVE_CURL_MULTI_TIMEOUT
-    /* get the curl suggested time out */
-    mcode = curl_multi_timeout(rbcm->handle, &timeout_milliseconds);
-    if (mcode != CURLM_OK) {
-      raise_curl_multi_error_exception(mcode);
-    }
-#else
-    /* libcurl doesn't have a timeout method defined... make a wild guess */
-    timeout_milliseconds = -1;
-#endif
-    //printf("libcurl says wait: %ld ms or %ld s\n", timeout_milliseconds, timeout_milliseconds/1000);
-
-    if (timeout_milliseconds == 0) { /* no delay */
-      rb_curl_multi_run( self, rbcm->handle, &(rbcm->running) );
-      continue;
-    }
-    else if(timeout_milliseconds < 0) {
-      timeout_milliseconds = cCurlMutiDefaulttimeout; /* wait half a second, libcurl doesn't know how long to wait */
-    }
-#ifdef __APPLE_CC__
-    if(timeout_milliseconds > 1000) {
-      timeout_milliseconds = cCurlMutiDefaulttimeout; /* apple libcurl sometimes reports huge timeouts... let's cap it */
-    }
-#endif
-
-    tv.tv_sec = timeout_milliseconds / 1000; // convert milliseconds to seconds
-    tv.tv_usec = (timeout_milliseconds % 1000) * 1000; // get the remainder of milliseconds and convert to micro seconds
-
-    rc = rb_thread_select(maxfd+1, &fdread, &fdwrite, &fdexcep, &tv);
-    switch(rc) {
-    case -1:
-      rb_raise(rb_eRuntimeError, "select(): %s", strerror(errno));
-      break;
-    case 0:
-      if (block != Qnil) {
-        rb_funcall(block, rb_intern("call"), 1, self); 
+      /* get the curl suggested time out */
+      mcode = curl_multi_timeout(rbcm->handle, &timeout_milliseconds);
+      if (mcode != CURLM_OK) {
+        raise_curl_multi_error_exception(mcode);
       }
-//      if (rb_block_given_p()) {
-//        rb_yield(self);
-//      }
-    default: 
-      rb_curl_multi_run( self, rbcm->handle, &(rbcm->running) );
-      break;
+#else
+      /* libcurl doesn't have a timeout method defined, initialize to -1 we'll pick up the default later */
+      timeout_milliseconds = -1;
+#endif
+
+      if (timeout_milliseconds == 0) { /* no delay */
+        rb_curl_multi_run( self, rbcm->handle, &(rbcm->running) );
+        continue;
+      }
+      else if (timeout_milliseconds < 0) {
+        timeout_milliseconds = cCurlMutiDefaulttimeout; /* libcurl doesn't know how long to wait, use a default timeout */
+      }
+
+      if (timeout_milliseconds > cCurlMutiDefaulttimeout) {
+        timeout_milliseconds = cCurlMutiDefaulttimeout; /* buggy versions libcurl sometimes reports huge timeouts... let's cap it */
+      }
+
+      tv.tv_sec  = 0; /* never wait longer than 1 second */
+      tv.tv_usec = timeout_milliseconds * 1000;
+
+      if (timeout_milliseconds == 0) { /* no delay */
+        rb_curl_multi_run( self, rbcm->handle, &(rbcm->running) );
+        continue;
+      }
+
+      if (block != Qnil) { rb_funcall(block, rb_intern("call"), 1, self);  }
+
+      FD_ZERO(&fdread);
+      FD_ZERO(&fdwrite);
+      FD_ZERO(&fdexcep);
+      /* load the fd sets from the multi handle */
+      mcode = curl_multi_fdset(rbcm->handle, &fdread, &fdwrite, &fdexcep, &maxfd);
+      if (mcode != CURLM_OK) {
+        raise_curl_multi_error_exception(mcode);
+      }
+
+      rc = rb_thread_select(maxfd+1, &fdread, &fdwrite, &fdexcep, &tv);
+      switch(rc) {
+      case -1:
+        rb_raise(rb_eRuntimeError, "select(): %s", strerror(errno));
+        break;
+      case 0:
+        rb_curl_multi_read_info( self, rbcm->handle );
+        if (block != Qnil) { rb_funcall(block, rb_intern("call"), 1, self);  }
+      default: 
+        rb_curl_multi_run( self, rbcm->handle, &(rbcm->running) );
+        break;
+      }
     }
-
-  }
-
+    rb_curl_multi_read_info( self, rbcm->handle );
+    if (block != Qnil) { rb_funcall(block, rb_intern("call"), 1, self);  }
+  } while( rbcm->running );
+    
   return Qtrue;
 }
 

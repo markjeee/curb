@@ -11,7 +11,7 @@ VALUE cCurlUpload;
 #endif
 
 static void curl_upload_mark(ruby_curl_upload *rbcu) {
-  if (rbcu->stream) rb_gc_mark(rbcu->stream);
+  if (rbcu->stream && !NIL_P(rbcu->stream)) rb_gc_mark(rbcu->stream);
 }
 static void curl_upload_free(ruby_curl_upload *rbcu) {
   free(rbcu);

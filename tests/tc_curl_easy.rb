@@ -1,4 +1,7 @@
 require File.expand_path(File.join(File.dirname(__FILE__), 'helper'))
+class FooNoToS 
+  undef to_s
+end
 
 class TestCurbCurlEasy < Test::Unit::TestCase
   def test_class_perform_01   
@@ -57,8 +60,7 @@ class TestCurbCurlEasy < Test::Unit::TestCase
     assert_equal nil, c.on_body
   end
 
-  class Foo < Curl::Easy
-  end
+  class Foo < Curl::Easy ; end
   def test_new_05
     # can use Curl::Easy as a base class
     c = Foo.new
@@ -361,6 +363,25 @@ class TestCurbCurlEasy < Test::Unit::TestCase
     assert_equal blk, c.on_body   # sets handler nil, returns old handler
     assert_equal nil, c.on_body
   end
+
+  def test_inspect_with_no_url
+    c = Curl::Easy.new
+    assert_equal '#<Curl::Easy>', c.inspect
+  end
+  
+  def test_inspect_with_short_url
+    c = Curl::Easy.new('http://www.google.com/')
+    assert_equal "#<Curl::Easy http://www.google.com/>", c.inspect
+  end
+  
+  def test_inspect_truncates_to_64_chars
+    base_url      = 'http://www.google.com/'
+    truncated_url = base_url + 'x' * (64 - '#<Curl::Easy >'.size - base_url.size)
+    long_url      = truncated_url + 'yyyy'
+    c = Curl::Easy.new(long_url)
+    assert_equal 64, c.inspect.size
+    assert_equal "#<Curl::Easy #{truncated_url}>", c.inspect
+  end
   
   def test_on_header
     blk = lambda { |i| i.length }
@@ -548,6 +569,15 @@ class TestCurbCurlEasy < Test::Unit::TestCase
     assert_equal 'foo=bar&encoded%20string=val', curl.post_body
   end
 
+  def test_post_multipart_file_remote
+    curl = Curl::Easy.new(TestServlet.url)
+    curl.multipart_form_post = true
+    pf = Curl::PostField.file('readme', File.expand_path(File.join(File.dirname(__FILE__),'..','README')))
+    curl.http_post(pf)
+    assert_match /HTTP POST file upload/, curl.body_str
+    assert_match /Content-Disposition: form-data/, curl.body_str
+  end
+
   def test_delete_remote
     curl = Curl::Easy.new(TestServlet.url)
     curl.http_delete
@@ -601,6 +631,13 @@ class TestCurbCurlEasy < Test::Unit::TestCase
     
     assert_match /^PUT/, curl.body_str
     assert_match /message$/, curl.body_str
+  end
+
+  def test_put_nil_data_no_crash
+    curl = Curl::Easy.new(TestServlet.url)
+    curl.put_data = nil
+    
+    curl.perform
   end
 
   def test_put_remote_file
@@ -675,7 +712,7 @@ class TestCurbCurlEasy < Test::Unit::TestCase
     #curl.verbose = true
     curl.perform
     assert_equal 'Basic Zm9vOmJhcg==', $auth_header
-
+    $auth_header = nil
     # curl checks the auth type supported by the server, so we have to create a 
     # new easy handle if we're going to change the auth type...
 
@@ -697,6 +734,92 @@ class TestCurbCurlEasy < Test::Unit::TestCase
       assert_equal '127.0.0.1', curl.primary_ip
     end
   end
+
+  def test_post_streaming
+    readme = File.expand_path(File.join(File.dirname(__FILE__),'..','README'))
+    
+    pf = Curl::PostField.file("filename", readme)
+
+    easy = Curl::Easy.new
+
+    easy.url = TestServlet.url
+    easy.multipart_form_post = true
+    easy.http_post(pf)
+
+    assert_not_equal(0,easy.body_str.size)
+    assert_equal(easy.body_str,File.read(readme))
+  end
+
+
+  def test_easy_close
+    easy = Curl::Easy.new
+    easy.close
+    easy.url = TestServlet.url
+    easy.http_get
+  end
+
+  def test_easy_reset
+    easy = Curl::Easy.new
+    easy.url = TestServlet.url + "?query=foo"
+    easy.http_get
+    settings = easy.reset
+    assert settings.key?(:url)
+    assert settings.key?(:body_data)
+    assert settings.key?(:header_data)
+    easy.url = TestServlet.url
+    easy.http_get
+  end
+
+  def test_easy_use_http_versions
+    easy = Curl::Easy.new
+    easy.url = TestServlet.url + "?query=foo"
+    #puts "http none: #{Curl::HTTP_NONE.inspect}"
+    #puts "http1.0: #{Curl::HTTP_1_0.inspect}"
+    #puts "http1.1: #{Curl::HTTP_1_1.inspect}"
+    easy.version = Curl::HTTP_1_1
+    #easy.verbose = true
+    easy.http_get
+  end
+
+  def test_easy_http_verbs
+    curl = Curl::Easy.new(TestServlet.url)
+    curl.http_delete
+    assert_equal 'DELETE', curl.body_str
+    curl.http_get
+    assert_equal 'GET', curl.body_str
+    curl.http_post
+    assert_equal "POST\n", curl.body_str
+    curl.http('PURGE')
+    assert_equal 'PURGE', curl.body_str
+    curl.http_put('hello')
+    assert_equal "PUT\nhello", curl.body_str
+    curl.http('COPY')
+    assert_equal 'COPY', curl.body_str
+  end
+
+  def test_easy_http_verbs_must_respond_to_str
+    # issue http://github.com/taf2/curb/issues#issue/45
+    assert_nothing_raised do
+      c = Curl::Easy.new ; c.url = 'http://example.com' ; c.http(:get)
+    end
+
+    assert_raise RuntimeError do
+      c = Curl::Easy.new ; c.url = 'http://example.com' ; c.http(FooNoToS.new)
+    end
+
+  end
+
+  # http://github.com/taf2/curb/issues/#issue/33
+  def test_easy_http_verbs_with_errors
+    curl = Curl::Easy.new("http://127.0.0.1:9012/") # test will fail if http server on port 9012
+    assert_raise Curl::Err::ConnectionFailedError do
+      curl.http_delete
+    end
+    curl.url = TestServlet.url
+    curl.http_get
+    assert_equal 'GET', curl.body_str
+  end
+
 
   include TestServerMethods 
 

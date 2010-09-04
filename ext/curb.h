@@ -20,11 +20,11 @@
 #include "curb_macros.h"
 
 // These should be managed from the Rake 'release' task.
-#define CURB_VERSION   "0.7.1"
-#define CURB_VER_NUM   701
+#define CURB_VERSION   "0.7.8"
+#define CURB_VER_NUM   708
 #define CURB_VER_MAJ   0
 #define CURB_VER_MIN   7
-#define CURB_VER_MIC   1
+#define CURB_VER_MIC   8
 #define CURB_VER_PATCH 0
 
 
@@ -37,10 +37,12 @@
   #define RSTRING_PTR(x) RSTRING(x)->ptr
 #endif
 
+#ifndef RHASH_LEN
 #ifdef HAVE_RUBY19_HASH
   #define RHASH_LEN(hash) RHASH(hash)->ntbl->num_entries
 #else
   #define RHASH_LEN(hash) RHASH(hash)->tbl->num_entries
+#endif
 #endif
 
 extern VALUE mCurl;

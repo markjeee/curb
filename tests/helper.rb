@@ -11,6 +11,7 @@ $:.unshift($EXTDIR)
 
 require 'curb'
 require 'test/unit'
+require 'fileutils'
 
 $TEST_URL = "file://#{URI.escape(File.expand_path(__FILE__).tr('\\','/').tr(':','|'))}"
 
@@ -73,14 +74,18 @@ class TestServlet < WEBrick::HTTPServlet::AbstractServlet
   end
 
   def do_POST(req,res)
-    if req.body
-      params = {}
-      req.body.split('&').map{|s| k,v=s.split('='); params[k] = v }
-    end
-    if params and params['s'] == '500'
-      res.status = 500
+    if req.query['filename'].nil?
+      if req.body
+        params = {}
+        req.body.split('&').map{|s| k,v=s.split('='); params[k] = v }
+      end
+      if params and params['s'] == '500'
+        res.status = 500
+      else
+        respond_with("POST\n#{req.body}",req,res)
+      end
     else
-      respond_with("POST\n#{req.body}",req,res)
+      respond_with(req.query['filename'],req,res)
     end
   end
 
@@ -95,6 +100,10 @@ class TestServlet < WEBrick::HTTPServlet::AbstractServlet
 
   def do_PURGE(req,res)
     respond_with(:PURGE,req,res)
+  end
+
+  def do_COPY(req,res)
+    respond_with(:COPY,req,res)
   end
 
 end
